@@ -48,5 +48,8 @@ func NewTestAdminParams(objects ...runtime.Object) (*pkg.AdminParams, *k8sfake.C
 		NewKubeClient: func() (kubernetes.Interface, error) {
 			return client, nil
 		},
+		InstallationMethod: func() (pkg.InstallationMethod, error) {
+			return pkg.InstallationMethodStandalone, nil
+		},
 	}, client
 }

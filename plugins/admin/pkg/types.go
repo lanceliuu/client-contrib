@@ -15,10 +15,13 @@
 package pkg
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -29,16 +32,72 @@ var LabelManagedBy = "app.kubernetes.io/managed-by"
 
 // AdminParams stores the configs for interacting with kube api
 type AdminParams struct {
-	KubeCfgPath   string
-	ClientConfig  clientcmd.ClientConfig
-	NewKubeClient func() (kubernetes.Interface, error)
+	KubeCfgPath        string
+	ClientConfig       clientcmd.ClientConfig
+	NewKubeClient      func() (kubernetes.Interface, error)
+	InstallationMethod func() (InstallationMethod, error)
 }
+
+// InstallationMethod identify how knative get installed
+type InstallationMethod int
+
+const (
+	// InstallationMethodUnknown default value
+	InstallationMethodUnknown InstallationMethod = iota
+	// InstallationMethodStandalone default installation method using full yaml configurations
+	InstallationMethodStandalone
+	// InstallationMethodOperator installation method using Knative Operator
+	InstallationMethodOperator
+)
+
+// ErrorOperatorModeNotSupport indicates that knative is managed by operator and cannot handled by sub command
+var ErrorOperatorModeNotSupport = errors.New("Knative managed by operator is not supported yet")
+
+// ErrorInstallationMethodUnknown indicates that can not detect current installation method
+var ErrorInstallationMethodUnknown = errors.New("Cannot detect current installation method")
 
 // Initialize generate the clientset for params
 func (params *AdminParams) Initialize() {
 	if params.NewKubeClient == nil {
 		params.NewKubeClient = params.newKubeClient
 	}
+	if params.InstallationMethod == nil {
+		params.InstallationMethod = params.installationMethod
+	}
+
+}
+
+// installationMethod retrives the installation method
+func (params *AdminParams) installationMethod() (InstallationMethod, error) {
+	client, err := params.NewKubeClient()
+	if err != nil {
+		return InstallationMethodUnknown, err
+	}
+	cm, err := client.CoreV1().ConfigMaps("knative-serving").Get("config-domain", metav1.GetOptions{})
+	if err != nil {
+		return InstallationMethodUnknown, err
+	}
+	for _, owner := range cm.OwnerReferences {
+		if strings.HasPrefix(owner.APIVersion, "operator.knative.dev") && owner.Kind == "KnativeServing" {
+			return InstallationMethodOperator, nil
+		}
+	}
+	return InstallationMethodStandalone, nil
+}
+
+// EnsureInstallMethodStandalone return error if current installation method is not standalone
+func (params *AdminParams) EnsureInstallMethodStandalone() error {
+	im, err := params.InstallationMethod()
+	if err != nil {
+		return err
+	}
+	switch im {
+	case InstallationMethodOperator:
+		return ErrorOperatorModeNotSupport
+	case InstallationMethodUnknown:
+		return ErrorInstallationMethodUnknown
+	}
+	return nil
 }
 
 // RestConfig returns REST config, which can be to use to create specific clientset
